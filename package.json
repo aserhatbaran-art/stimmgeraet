@@ -1,0 +1,12 @@
+{
+  "name": "stimmgeraet",
+  "version": "1.0.0",
+  "description": "Stimmgerät für Gitarre und Ukulele (PWA)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "icons": "node tools/make-icons.mjs",
+    "start": "python -m http.server 8137"
+  }
+}
