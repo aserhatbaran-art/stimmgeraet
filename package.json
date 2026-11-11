@@ -1,6 +1,6 @@
 {
   "name": "stimmgeraet",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Stimmgerät für Gitarre und Ukulele (PWA)",
   "private": true,
   "type": "module",

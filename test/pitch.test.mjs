@@ -109,6 +109,49 @@ test('Rauschen liefert keinen Ton', () => {
   }
 });
 
+test('Anschlag: Ton wird erkannt, sobald etwa 4 Perioden im Puffer liegen', () => {
+  const detector = new PitchDetector(48000);
+  const rand = rng(99);
+  let slowest = 0;
+  for (const midi of midiNotes) {
+    const f = midiToFreq(midi, 440);
+    const full = synth(f, 48000, { noise: 0.0005, seed: midi });
+    const filled = Math.ceil((4.5 * 48000) / f); // so viele Samples enthalten schon Ton
+    // davor nur das Grundrauschen des Mikrofons
+    const buffer = Float32Array.from({ length: N }, () => 0.0005 * (rand() * 2 - 1));
+    buffer.set(full.subarray(0, filled), N - filled);
+    const result = detector.detect(buffer);
+    assert.ok(result.freq, `${f.toFixed(2)} Hz nach ${((filled / 48000) * 1000).toFixed(0)} ms noch nicht erkannt`);
+    // Die allererste Messung darf grob sein; 20 ms später liegt mehr Signal vor.
+    assert.ok(Math.abs(cents(result.freq, f)) < 5, `${f.toFixed(2)} Hz erkannt als ${result.freq.toFixed(2)} Hz`);
+    slowest = Math.max(slowest, (filled / 48000) * 1000);
+  }
+  console.log(`  längste nötige Tondauer: ${slowest.toFixed(0)} ms (tiefste Saite)`);
+});
+
+test('Tonwechsel: nach einem halben Puffer zählt der neue Ton', () => {
+  const detector = new PitchDetector(48000);
+  const oldTone = synth(196, 48000, { seed: 3 });
+  const newTone = synth(246.94, 48000, { seed: 4 });
+  const buffer = new Float32Array(N);
+  buffer.set(oldTone.subarray(0, N / 2), 0);
+  buffer.set(newTone.subarray(0, N / 2), N / 2);
+  const result = detector.detect(buffer);
+  assert.ok(result.freq && Math.abs(cents(result.freq, 246.94)) < 1, `erkannt: ${result.freq}`);
+});
+
+test('Rechenzeit je Messung', () => {
+  const detector = new PitchDetector(48000);
+  const signals = midiNotes.map((midi) => synth(midiToFreq(midi, 440), 48000, { noise: 0.004, seed: midi }));
+  for (const s of signals) detector.detect(s); // Aufwärmen
+  const rounds = 20;
+  const t0 = performance.now();
+  for (let r = 0; r < rounds; r++) for (const s of signals) detector.detect(s);
+  const ms = (performance.now() - t0) / (rounds * signals.length);
+  console.log(`  ${ms.toFixed(3)} ms je Messung`);
+  assert.ok(ms < 2, `zu langsam: ${ms.toFixed(2)} ms`);
+});
+
 test('anderer Kammerton: 432 Hz wird als 432 Hz gemessen', () => {
   const detector = new PitchDetector(48000);
   const result = detector.detect(synth(432, 48000));

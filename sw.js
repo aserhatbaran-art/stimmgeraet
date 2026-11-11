@@ -1,10 +1,10 @@
 /**
  * Service Worker: macht die App offline nutzbar.
  * Strategie: sofort aus dem Cache antworten und im Hintergrund aktualisieren.
- * Eine neue Version erscheint dadurch beim übernächsten Öffnen der App.
+ * Eine neue Version wird beim nächsten Öffnen geladen; die App lädt sich dann einmal neu.
  * Bei Änderungen an der Dateiliste die Versionsnummer erhöhen.
  */
-const CACHE = 'stimmgeraet-v1';
+const CACHE = 'stimmgeraet-v2';
 const FILES = [
   './',
   'index.html',
@@ -12,6 +12,7 @@ const FILES = [
   'js/app.js',
   'js/audio.js',
   'js/pitch.js',
+  'js/pitch-worker.js',
   'js/tone.js',
   'js/tunings.js',
   'manifest.webmanifest',
@@ -24,7 +25,7 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(FILES))
+      .then((cache) => cache.addAll(FILES.map((url) => new Request(url, { cache: 'reload' }))))
       .then(() => self.skipWaiting()),
   );
 });

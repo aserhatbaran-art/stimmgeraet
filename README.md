@@ -8,7 +8,9 @@ Präzises Stimmgerät als installierbare Web-App (PWA) für Android. Kostenlos, 
 - **Ukulele:** Standard (G C E A), Low-G, Bariton, D-Stimmung
 - **Chromatisch:** zeigt den nächstgelegenen Halbton für beliebige Instrumente
 - Automatische Saitenerkennung oder feste Saitenwahl durch Antippen
-- Anzeige in Cent (± 50), Frequenz in Hz, grüne Markierung innerhalb ± 3 Cent
+- Zeiger mit Ruheposition: ohne Ton liegt er links, mit Ton zeigt er die Abweichung
+- Gespreizte Skala: bis ± 10 Cent bewegt 1 Cent den Zeiger deutlich; grünes Feld innerhalb ± 3 Cent
+- Anzeige in Cent und Hz, Reaktion rund 0,05–0,1 Sekunden nach dem Anschlag
 - Kammerton A4 einstellbar (430–450 Hz), Referenzton je Saite
 - Deutsche (H) oder internationale (B) Notennamen
 - Funktioniert nach der Installation offline
@@ -17,8 +19,8 @@ Präzises Stimmgerät als installierbare Web-App (PWA) für Android. Kostenlos, 
 
 1. **Mikrofon einschalten** antippen und den Zugriff erlauben.
 2. Instrument und Stimmung wählen.
-3. Eine Saite anzupfen. Die App erkennt die Saite und zeigt die Abweichung:
-   Nadel links / blau = zu tief, Nadel rechts / rot = zu hoch, grün = gestimmt.
+3. Eine Saite anzupfen. Der Zeiger schwingt aus der Ruheposition links zur Messposition:
+   links der Mitte / blau = zu tief, rechts / rot = zu hoch, im grünen Feld = gestimmt.
 4. Optional eine Saite antippen, um sie fest zu wählen (hilfreich bei neuen, stark verstimmten Saiten).
 5. **Referenzton** einschalten und eine Saite antippen, um den Zielton zu hören.
 
@@ -61,16 +63,17 @@ npm test
 npm start
 ```
 
-Danach <http://localhost:8137> öffnen. Mit `?test=110` wird statt des Mikrofons ein künstlicher Ton mit 110 Hz eingespeist; mit `?sw=1` wird der Service Worker auch lokal aktiviert.
+Danach <http://localhost:8137> öffnen. Mit `?test=110` wird statt des Mikrofons ein künstlicher Ton mit 110 Hz eingespeist (mit `&delay=1000` setzt er erst nach einer Sekunde ein, die gemessene Reaktionszeit steht dann im Attribut `data-test` des `<html>`-Elements); mit `?sw=1` wird der Service Worker auch lokal aktiviert.
 
-Nach Änderungen an den Dateien die Versionsnummer `CACHE` in `sw.js` erhöhen, damit installierte Apps die neue Version laden (sie erscheint beim übernächsten Öffnen).
+Nach Änderungen an den Dateien die Versionsnummer `CACHE` in `sw.js` erhöhen, damit installierte Apps die neue Version laden. Ab Version 1.1 lädt sich die App beim nächsten Öffnen einmal selbst neu; die Versionsnummer steht in den Einstellungen.
 
 ### Aufbau
 
 | Datei | Inhalt |
 |---|---|
-| `js/pitch.js` | Tonhöhenerkennung (McLeod Pitch Method mit Mehrperioden-Verfeinerung) |
-| `js/audio.js` | Mikrofon, Analyse-Schleife, Glättung |
+| `js/pitch.js` | Tonhöhenerkennung (McLeod Pitch Method: Grobsuche bei 12 kHz, Feinsuche bei voller Abtastrate) |
+| `js/pitch-worker.js` | führt die Erkennung im Hintergrund-Thread aus |
+| `js/audio.js` | Mikrofon, Analyse-Schleife (50 Messungen pro Sekunde), Ausreißer-Filter |
 | `js/tunings.js` | Stimmungen, Notennamen, Umrechnungen |
 | `js/tone.js` | Referenzton |
 | `js/app.js` | Oberfläche und Einstellungen |
@@ -80,4 +83,4 @@ Nach Änderungen an den Dateien die Versionsnummer `CACHE` in `sw.js` erhöhen, 
 
 ### Genauigkeit
 
-Die Tests prüfen alle Saiten aller Stimmungen bei 44,1 und 48 kHz: Bei sauberen Tönen liegt der Messfehler unter 0,01 Cent, mit Rauschen und abklingendem Ton unter 0,5 Cent. In der Praxis begrenzen Mikrofon und Saitenschwingung die Genauigkeit auf etwa ± 1 Cent.
+Die Tests prüfen alle Saiten aller Stimmungen bei 44,1 und 48 kHz: Bei sauberen Tönen liegt der Messfehler unter 0,01 Cent, mit Rauschen und abklingendem Ton unter 0,5 Cent. Eine Messung dauert rund 0,2 ms; ein Ton wird erkannt, sobald etwa vier Perioden vorliegen (tiefe E-Saite: rund 60 ms). In der Praxis begrenzen Mikrofon und Saitenschwingung die Genauigkeit auf etwa ± 1 Cent.

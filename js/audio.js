@@ -1,21 +1,32 @@
 /**
  * Mikrofonzugriff und Analyse-Schleife.
- * Liefert rund 25-mal pro Sekunde ein geglättetes Messergebnis.
+ * Liefert rund 50-mal pro Sekunde ein Messergebnis. Die Berechnung selbst
+ * läuft in einem Hintergrund-Thread (pitch-worker.js).
  */
 import { PitchDetector } from './pitch.js';
 
-const INTERVAL_MS = 40;
-const HISTORY = 5;
+const INTERVAL_MS = 20;
+const HISTORY = 3;
+const SAME_NOTE = 1 / 24; // zwei Messungen gelten als gleicher Ton, wenn sie weniger als 50 Cent auseinanderliegen
 
 export class Tuner {
-  /** @param {(result: {freq: number|null, clarity: number, rms: number}) => void} onResult */
+  /** @param {(result: {freq: number|null, clarity: number, rms: number, ms: number}) => void} onResult */
   constructor(onResult) {
     this.onResult = onResult;
     this.ctx = null;
     this.stream = null;
     this.timer = null;
+    this.worker = null;
+    this.buffer = null;
     this.history = [];
     this.misses = 0;
+    /** Zeitpunkt auf der Audio-Uhr, zu dem der Testton einsetzt – nur im Testmodus. */
+    this.testOnset = 0;
+  }
+
+  /** Testmodus: Millisekunden seit Einsetzen des Testtons, gemessen auf der Audio-Uhr. */
+  testElapsedMs() {
+    return this.ctx ? (this.ctx.currentTime - this.testOnset) * 1000 : 0;
   }
 
   get running() {
@@ -29,9 +40,10 @@ export class Tuner {
 
   /**
    * @param {object} [options]
-   * @param {number} [options.testFreq] statt des Mikrofons einen künstlichen Ton einspeisen (Testmodus)
+   * @param {number} [options.testFreq]  statt des Mikrofons einen künstlichen Ton einspeisen (Testmodus)
+   * @param {number} [options.testDelay] der Testton setzt erst nach so vielen Millisekunden ein
    */
-  async start({ testFreq } = {}) {
+  async start({ testFreq, testDelay = 0 } = {}) {
     if (this.running || this.starting) return;
     this.starting = true;
     try {
@@ -42,7 +54,7 @@ export class Tuner {
 
       let source;
       if (testFreq) {
-        source = this._testSource(testFreq);
+        source = this._testSource(testFreq, testDelay);
       } else {
         if (!navigator.mediaDevices?.getUserMedia) {
           throw named(window.isSecureContext ? 'NotSupportedError' : 'InsecureContextError');
@@ -60,15 +72,46 @@ export class Tuner {
       analyser.smoothingTimeConstant = 0;
       source.connect(analyser);
 
-      const buffer = new Float32Array(analyser.fftSize);
-      const detector = new PitchDetector(this.ctx.sampleRate);
+      const size = analyser.fftSize;
+      const sampleRate = this.ctx.sampleRate;
+      this.buffer = new Float32Array(size);
       this.history = [];
       this.misses = 0;
 
+      // Ersatz, falls der Hintergrund-Thread nicht verfügbar ist: im Hauptthread rechnen
+      let local = null;
+      const useLocal = () => {
+        this.worker?.terminate();
+        this.worker = null;
+        local = new PitchDetector(sampleRate);
+        this.buffer = new Float32Array(size);
+      };
+      try {
+        this.worker = new Worker(new URL('./pitch-worker.js', import.meta.url), { type: 'module' });
+        this.worker.onerror = useLocal;
+        this.worker.onmessage = ({ data }) => {
+          this.buffer = new Float32Array(data.buffer); // Puffer zurückerhalten
+          this._handle(data.result);
+        };
+        this.worker.postMessage({ sampleRate });
+      } catch {
+        useLocal();
+      }
+
       this.timer = setInterval(() => {
-        if (this.ctx.state !== 'running') return;
-        analyser.getFloatTimeDomainData(buffer);
-        this._handle(detector.detect(buffer));
+        // Solange der Hintergrund-Thread noch rechnet, ist der Puffer unterwegs → Takt auslassen
+        if (this.ctx.state !== 'running' || !this.buffer) return;
+        analyser.getFloatTimeDomainData(this.buffer);
+        if (this.worker) {
+          const { buffer } = this.buffer;
+          this.buffer = null;
+          this.worker.postMessage({ buffer }, [buffer]);
+        } else {
+          const started = performance.now();
+          const result = local.detect(this.buffer);
+          result.ms = performance.now() - started;
+          this._handle(result);
+        }
       }, INTERVAL_MS);
     } catch (err) {
       this._release();
@@ -90,33 +133,47 @@ export class Tuner {
   }
 
   _release() {
+    this.worker?.terminate();
+    this.worker = null;
+    this.buffer = null;
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;
     this.ctx?.close().catch(() => {});
     this.ctx = null;
   }
 
-  /** Median über die letzten Messungen: unterdrückt einzelne Ausreißer und Oktavsprünge. */
+  /**
+   * Gibt eine Messung erst weiter, wenn zwei aufeinanderfolgende zusammenpassen,
+   * und nimmt dann den Median der letzten drei. Das unterdrückt einzelne Ausreißer
+   * (z. B. Oktavsprünge im Anschlag) und kostet nur einen Takt von 20 ms.
+   */
   _handle(result) {
+    if (!this.running) return;
+    const { clarity, rms, ms } = result;
     if (result.freq === null) {
       if (++this.misses >= 3) this.history.length = 0;
-      this.onResult({ freq: null, clarity: result.clarity, rms: result.rms });
+      this.onResult({ freq: null, clarity, rms, ms });
       return;
     }
     this.misses = 0;
-    this.history.push(result.freq);
-    if (this.history.length > HISTORY) this.history.shift();
-    if (this.history.length < 2) {
-      this.onResult({ freq: null, clarity: result.clarity, rms: result.rms });
-      return;
+    const h = this.history;
+    h.push(result.freq);
+    if (h.length > HISTORY) h.shift();
+
+    let freq = null;
+    if (h.length >= 3) {
+      freq = [...h].sort((a, b) => a - b)[1];
+    } else if (h.length === 2 && Math.abs(Math.log2(h[1] / h[0])) < SAME_NOTE) {
+      freq = h[1];
     }
-    const sorted = [...this.history].sort((a, b) => a - b);
-    this.onResult({ freq: sorted[sorted.length >> 1], clarity: result.clarity, rms: result.rms });
+    this.onResult({ freq, clarity, rms, ms });
   }
 
-  _testSource(freq) {
+  _testSource(freq, delayMs) {
     const mix = this.ctx.createGain();
-    mix.gain.value = 0.2;
+    mix.gain.value = 0;
+    this.testOnset = this.ctx.currentTime + delayMs / 1000;
+    mix.gain.setValueAtTime(0.2, this.testOnset);
     [1, 0.5, 0.3].forEach((amp, i) => {
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();

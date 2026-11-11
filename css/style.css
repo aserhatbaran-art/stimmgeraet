@@ -9,6 +9,7 @@
   --low: #58a6ff;
   --high: #ff7b72;
   --accent: var(--muted);
+  --gap: 10px;
   color-scheme: dark;
 }
 
@@ -21,9 +22,13 @@ html,
 body {
   height: 100%;
   margin: 0;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* Feste Schriftgrößen: Die App füllt genau einen Bildschirm und darf nicht umbrechen. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   overscroll-behavior: none;
   user-select: none;
   -webkit-user-select: none;
@@ -31,6 +36,16 @@ body {
 
 [hidden] {
   display: none !important;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 button,
@@ -44,38 +59,40 @@ button {
   cursor: pointer;
 }
 
+/* Die App füllt genau die sichtbare Höhe; alles Feste behält seine Größe,
+   die Anzeige in der Mitte nimmt den Rest und schrumpft bei Bedarf. */
 .app {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-height: 100dvh;
+  gap: var(--gap);
+  height: 100vh;
+  height: 100dvh;
   max-width: 520px;
   margin: 0 auto;
   padding: calc(8px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
-    calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+    calc(12px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+  overflow: hidden;
 }
 
-/* ---------- Kopfzeile ---------- */
+.app > * {
+  flex: none;
+}
+
+/* ---------- Kopfzeile: Instrument und Einstellungen ---------- */
 
 .topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-}
-
-.topbar h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
+  gap: 6px;
 }
 
 .icon-btn {
   display: grid;
   place-items: center;
+  flex: none;
   width: 44px;
   height: 44px;
-  margin-right: -10px;
+  margin-right: -8px;
   border: 0;
   border-radius: 50%;
   background: none;
@@ -86,9 +103,8 @@ button {
   background: var(--surface-2);
 }
 
-/* ---------- Instrument und Stimmung ---------- */
-
 .segmented {
+  flex: 1;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 4px;
@@ -98,13 +114,16 @@ button {
 }
 
 .segmented button {
-  min-height: 40px;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 2px;
   border: 0;
   border-radius: 9px;
   background: none;
   color: var(--muted);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 550;
+  white-space: nowrap;
 }
 
 .segmented button[aria-selected='true'] {
@@ -117,7 +136,6 @@ button {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 44px;
 }
 
 .tuning-row label {
@@ -127,7 +145,8 @@ button {
 
 .tuning-row select {
   flex: 1;
-  min-height: 44px;
+  min-width: 0;
+  height: 42px;
   padding: 0 36px 0 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -140,13 +159,12 @@ button {
 
 /* ---------- Anzeige ---------- */
 
-.meter {
-  flex: 1;
+.app > .meter {
+  flex: 1 1 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  min-height: 0;
-  transition: opacity 0.25s;
 }
 
 .meter[data-state='ok'] {
@@ -158,24 +176,32 @@ button {
 .meter[data-state='high'] {
   --accent: var(--high);
 }
-.meter.hold {
-  opacity: 0.55;
-}
 
 #gauge {
   display: block;
+  flex: 0 1 auto;
   width: 100%;
-  max-height: 34dvh;
+  height: auto;
+  min-height: 64px;
+  transition: opacity 0.2s;
+}
+.meter.hold #gauge,
+.meter.hold .readout {
+  opacity: 0.55;
 }
 
 .tick {
   stroke: #47515e;
-  stroke-width: 1.5;
+  stroke-width: 1.2;
   stroke-linecap: round;
 }
-.tick.major {
+.tick.medium {
   stroke: #6e7a89;
-  stroke-width: 2;
+  stroke-width: 1.6;
+}
+.tick.major {
+  stroke: #8b949e;
+  stroke-width: 2.2;
 }
 .tick.zero {
   stroke: var(--ok);
@@ -187,41 +213,49 @@ button {
   text-anchor: middle;
 }
 
+/* Grünes Zielfeld: ± 3 Cent. Leuchtet auf, wenn die Saite stimmt. */
 .zone {
   fill: none;
   stroke: var(--ok);
-  stroke-width: 5;
+  stroke-width: 6;
   stroke-linecap: round;
-  opacity: 0.9;
+  opacity: 0.55;
+  transition:
+    stroke-width 0.12s,
+    opacity 0.12s;
+}
+.meter[data-state='ok'] .zone {
+  stroke-width: 12;
+  opacity: 1;
+  filter: drop-shadow(0 0 6px rgb(63 220 133 / 80%));
 }
 
 #needle {
   transform-box: view-box;
   transform-origin: 160px 165px;
-  transition: transform 0.09s linear;
+  will-change: transform;
 }
 #needle line {
   stroke: var(--accent);
   stroke-width: 3.5;
   stroke-linecap: round;
-  transition: stroke 0.15s;
-}
-.meter[data-state='idle'] #needle line {
-  stroke: #47515e;
+  transition: stroke 0.12s;
 }
 .hub {
   fill: var(--bg);
   stroke: var(--accent);
   stroke-width: 3;
-  transition: stroke 0.15s;
+  transition: stroke 0.12s;
 }
+/* Ruheposition: Zeiger liegt links und ist ausgegraut */
+.meter[data-state='idle'] #needle line,
 .meter[data-state='idle'] .hub {
   stroke: #47515e;
 }
 
 .level {
   height: 3px;
-  margin: 6px 20% 0;
+  margin: 4px 20% 0;
   border-radius: 2px;
   background: var(--surface);
   overflow: hidden;
@@ -231,19 +265,20 @@ button {
   background: var(--muted);
   transform: scaleX(0);
   transform-origin: left;
-  transition: transform 0.08s linear;
+  transition: transform 0.06s linear;
 }
 
 .readout {
   text-align: center;
+  transition: opacity 0.2s;
 }
 
 .note {
-  font-size: clamp(64px, 22vw, 104px);
+  font-size: clamp(46px, 11dvh, 100px);
   font-weight: 700;
-  line-height: 1.05;
+  line-height: 1.08;
   color: var(--accent);
-  transition: color 0.15s;
+  transition: color 0.12s;
 }
 .meter[data-state='idle'] .note {
   color: var(--text);
@@ -257,32 +292,42 @@ button {
 }
 
 .cents {
-  font-size: 22px;
+  font-size: clamp(18px, 2.9dvh, 23px);
   font-weight: 600;
+  line-height: 1.25;
   font-variant-numeric: tabular-nums;
 }
 
 .hint {
-  margin-top: 4px;
-  font-size: 17px;
+  font-size: clamp(15px, 2.3dvh, 17px);
+  line-height: 1.35;
   color: var(--accent);
-  transition: color 0.15s;
+  transition: color 0.12s;
 }
 
 .freq {
-  margin-top: 6px;
-  font-size: 14px;
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.3;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+.startbox {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 0 4px;
 }
 
 /* ---------- Saiten ---------- */
 
 .strings {
   display: grid;
-  grid-template-columns: repeat(var(--count, 6), minmax(0, 60px));
+  grid-template-columns: repeat(var(--count, 6), minmax(0, 58px));
   justify-content: center;
   gap: 8px;
+  padding-bottom: 16px; /* Platz für die Saitennummern */
 }
 
 .string {
@@ -297,8 +342,8 @@ button {
   font-size: 18px;
   font-weight: 650;
   transition:
-    border-color 0.15s,
-    background 0.15s;
+    border-color 0.12s,
+    background 0.12s;
 }
 
 .string sub {
@@ -310,11 +355,12 @@ button {
 
 .string-num {
   position: absolute;
-  bottom: -18px;
+  bottom: -17px;
   left: 0;
   right: 0;
   font-size: 11px;
   font-weight: 400;
+  line-height: 1;
   color: var(--muted);
 }
 
@@ -355,13 +401,6 @@ button {
 
 /* ---------- Fußzeile ---------- */
 
-.actions {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 18px;
-}
-
 .toggles {
   display: flex;
   gap: 8px;
@@ -369,17 +408,19 @@ button {
 
 .chip {
   flex: 1;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 46px;
+  height: 46px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface);
   color: var(--muted);
   font-size: 15px;
   font-weight: 550;
+  white-space: nowrap;
 }
 
 .chip[aria-pressed='true'] {
@@ -412,17 +453,60 @@ button {
   line-height: 1.4;
 }
 
+/* ---------- Niedrige Bildschirme ---------- */
+
+@media (max-height: 640px) {
+  :root {
+    --gap: 7px;
+  }
+  .strings {
+    grid-template-columns: repeat(var(--count, 6), minmax(0, 50px));
+  }
+  .string {
+    font-size: 16px;
+  }
+  .chip {
+    height: 42px;
+  }
+  .tuning-row select {
+    height: 40px;
+  }
+  .freq {
+    margin-top: 0;
+  }
+}
+
+/* ---------- Schmale Bildschirme ---------- */
+
+@media (max-width: 350px) {
+  .app {
+    padding-left: calc(10px + env(safe-area-inset-left));
+    padding-right: calc(10px + env(safe-area-inset-right));
+  }
+  .segmented button {
+    font-size: 13px;
+  }
+  .strings {
+    gap: 6px;
+  }
+  .chip {
+    font-size: 14px;
+  }
+}
+
 /* ---------- Einstellungen ---------- */
 
 dialog {
   width: min(100%, 520px);
   max-width: none;
+  max-height: 100dvh;
   margin: auto auto 0;
   padding: 20px 20px calc(20px + env(safe-area-inset-bottom));
   border: 0;
   border-radius: 20px 20px 0 0;
   background: var(--surface);
   color: var(--text);
+  overflow-y: auto;
 }
 
 dialog::backdrop {
