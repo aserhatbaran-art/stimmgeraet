@@ -38,23 +38,31 @@
       </div>
 
       <main class="meter" id="meter" data-state="idle">
-        <svg id="gauge" viewBox="0 0 320 178" role="img" aria-label="Abweichung in Cent">
-          <path id="gauge-zone" class="zone" />
-          <g id="gauge-ticks"></g>
-          <g id="needle">
-            <line x1="160" y1="165" x2="160" y2="34" />
-          </g>
-          <circle class="hub" cx="160" cy="165" r="7" />
-        </svg>
+        <div class="note-row">
+          <span class="arrow arrow-up" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="36" height="36"><path fill="currentColor" d="M8 5v14l11-7z" /></svg>
+          </span>
+          <div class="note" id="note"><span id="note-name">–</span><sub id="note-octave"></sub></div>
+          <span class="arrow arrow-down" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="36" height="36"><path fill="currentColor" d="M16 5v14L5 12z" /></svg>
+          </span>
+        </div>
+
+        <div class="scale" id="scale" role="img" aria-label="Stimmanzeige">
+          <div class="scale-track">
+            <div class="scale-zone"></div>
+            <div class="scale-ticks" id="scale-ticks"></div>
+            <div class="marker" id="marker"><div class="marker-pin"></div></div>
+          </div>
+          <div class="scale-labels" aria-hidden="true"><span>zu tief</span><span>zu hoch</span></div>
+        </div>
+
+        <div class="readout" id="readout">
+          <div class="hint" id="hint" aria-live="polite">Saite anzupfen</div>
+          <div class="sub" id="sub">&nbsp;</div>
+        </div>
 
         <div class="level" aria-hidden="true"><div id="level-bar"></div></div>
-
-        <div class="readout" id="readout" aria-live="off">
-          <div class="note"><span id="note-name">–</span><sub id="note-octave"></sub></div>
-          <div class="cents" id="cents">&nbsp;</div>
-          <div class="hint" id="hint">Saite anzupfen</div>
-          <div class="freq" id="freq">&nbsp;</div>
-        </div>
 
         <div class="startbox" id="startbox">
           <button id="btn-start" class="primary" type="button">Mikrofon einschalten</button>
@@ -111,7 +119,7 @@
         </label>
 
         <button class="primary" type="submit">Fertig</button>
-        <p class="version">Version 1.1 · funktioniert offline · keine Datenübertragung</p>
+        <p class="version">Version 1.2 · funktioniert offline · keine Datenübertragung</p>
       </form>
     </dialog>
 

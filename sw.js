@@ -4,7 +4,7 @@
  * Eine neue Version wird beim nächsten Öffnen geladen; die App lädt sich dann einmal neu.
  * Bei Änderungen an der Dateiliste die Versionsnummer erhöhen.
  */
-const CACHE = 'stimmgeraet-v2';
+const CACHE = 'stimmgeraet-v3';
 const FILES = [
   './',
   'index.html',
@@ -13,6 +13,7 @@ const FILES = [
   'js/audio.js',
   'js/pitch.js',
   'js/pitch-worker.js',
+  'js/tracker.js',
   'js/tone.js',
   'js/tunings.js',
   'manifest.webmanifest',

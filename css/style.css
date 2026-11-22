@@ -165,6 +165,7 @@ button {
   display: flex;
   flex-direction: column;
   justify-content: center;
+  gap: clamp(10px, 2.6dvh, 26px);
 }
 
 .meter[data-state='ok'] {
@@ -177,106 +178,20 @@ button {
   --accent: var(--high);
 }
 
-#gauge {
-  display: block;
-  flex: 0 1 auto;
-  width: 100%;
-  height: auto;
-  min-height: 64px;
-  transition: opacity 0.2s;
-}
-.meter.hold #gauge,
-.meter.hold .readout {
-  opacity: 0.55;
-}
-
-.tick {
-  stroke: #47515e;
-  stroke-width: 1.2;
-  stroke-linecap: round;
-}
-.tick.medium {
-  stroke: #6e7a89;
-  stroke-width: 1.6;
-}
-.tick.major {
-  stroke: #8b949e;
-  stroke-width: 2.2;
-}
-.tick.zero {
-  stroke: var(--ok);
-  stroke-width: 3;
-}
-.tick-label {
-  fill: var(--muted);
-  font-size: 11px;
-  text-anchor: middle;
-}
-
-/* Grünes Zielfeld: ± 3 Cent. Leuchtet auf, wenn die Saite stimmt. */
-.zone {
-  fill: none;
-  stroke: var(--ok);
-  stroke-width: 6;
-  stroke-linecap: round;
-  opacity: 0.55;
-  transition:
-    stroke-width 0.12s,
-    opacity 0.12s;
-}
-.meter[data-state='ok'] .zone {
-  stroke-width: 12;
-  opacity: 1;
-  filter: drop-shadow(0 0 6px rgb(63 220 133 / 80%));
-}
-
-#needle {
-  transform-box: view-box;
-  transform-origin: 160px 165px;
-  will-change: transform;
-}
-#needle line {
-  stroke: var(--accent);
-  stroke-width: 3.5;
-  stroke-linecap: round;
-  transition: stroke 0.12s;
-}
-.hub {
-  fill: var(--bg);
-  stroke: var(--accent);
-  stroke-width: 3;
-  transition: stroke 0.12s;
-}
-/* Ruheposition: Zeiger liegt links und ist ausgegraut */
-.meter[data-state='idle'] #needle line,
-.meter[data-state='idle'] .hub {
-  stroke: #47515e;
-}
-
-.level {
-  height: 3px;
-  margin: 4px 20% 0;
-  border-radius: 2px;
-  background: var(--surface);
-  overflow: hidden;
-}
-#level-bar {
-  height: 100%;
-  background: var(--muted);
-  transform: scaleX(0);
-  transform-origin: left;
-  transition: transform 0.06s linear;
-}
-
-.readout {
-  text-align: center;
-  transition: opacity 0.2s;
+/* Notenname mit Richtungspfeilen: Der leuchtende Pfeil zeigt, wohin der Marker wandern muss */
+.note-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(8px, 4vw, 24px);
 }
 
 .note {
-  font-size: clamp(46px, 11dvh, 100px);
+  min-width: 2.2ch;
+  text-align: center;
+  font-size: clamp(56px, 13dvh, 112px);
   font-weight: 700;
-  line-height: 1.08;
+  line-height: 1;
   color: var(--accent);
   transition: color 0.12s;
 }
@@ -291,33 +206,185 @@ button {
   margin-left: 2px;
 }
 
-.cents {
-  font-size: clamp(18px, 2.9dvh, 23px);
-  font-weight: 600;
-  line-height: 1.25;
-  font-variant-numeric: tabular-nums;
+.arrow {
+  display: grid;
+  place-items: center;
+  color: var(--surface-2);
+  transition:
+    color 0.12s,
+    transform 0.12s;
+}
+.arrow svg {
+  width: clamp(28px, 6dvh, 44px);
+  height: auto;
+}
+.meter[data-state='low'] .arrow-up {
+  color: var(--low);
+  animation: nudge-right 0.9s ease-in-out infinite;
+}
+.meter[data-state='high'] .arrow-down {
+  color: var(--high);
+  animation: nudge-left 0.9s ease-in-out infinite;
+}
+.meter[data-state='ok'] .arrow {
+  color: var(--ok);
+}
+@keyframes nudge-right {
+  50% {
+    transform: translateX(5px);
+  }
+}
+@keyframes nudge-left {
+  50% {
+    transform: translateX(-5px);
+  }
+}
+
+/* Waagerechte Skala: Mitte = gestimmt, links = zu tief, rechts = zu hoch */
+.scale {
+  padding: 0 4px;
+}
+
+.scale-track {
+  position: relative;
+  height: clamp(54px, 9dvh, 76px);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+/* Grünes Zielfeld ± 3 Cent */
+.scale-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 47%;
+  width: 6%;
+  background: rgb(63 220 133 / 18%);
+  border-left: 1px solid rgb(63 220 133 / 45%);
+  border-right: 1px solid rgb(63 220 133 / 45%);
+  transition: background 0.12s;
+}
+.meter[data-state='ok'] .scale-zone {
+  background: rgb(63 220 133 / 45%);
+}
+
+.scale-ticks {
+  position: absolute;
+  inset: 0;
+}
+.tick {
+  position: absolute;
+  bottom: 0;
+  width: 2px;
+  height: 18%;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: #3a4350;
+}
+.tick.medium {
+  height: 30%;
+  background: #4f5a68;
+}
+.tick.major {
+  height: 42%;
+  background: #6e7a89;
+}
+.tick.zero {
+  top: 0;
+  height: auto;
+  width: 3px;
+  margin-left: -1.5px;
+  background: var(--ok);
+}
+
+/* Marker: so breit wie die Skala, damit translateX(50 %) genau eine halbe Skala ist */
+.marker {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  will-change: transform;
+  transition: opacity 0.15s;
+}
+.marker-pin {
+  position: absolute;
+  top: 8%;
+  bottom: 8%;
+  left: 50%;
+  width: 8px;
+  margin-left: -4px;
+  border-radius: 4px;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+  transition: background 0.12s;
+}
+.meter[data-state='idle'] .marker {
+  opacity: 0;
+}
+.meter.weak .marker {
+  opacity: 0.6;
+}
+.meter.stale .marker {
+  opacity: 0.3;
+}
+
+.scale-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  padding: 0 2px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.readout {
+  text-align: center;
 }
 
 .hint {
-  font-size: clamp(15px, 2.3dvh, 17px);
-  line-height: 1.35;
+  font-size: clamp(19px, 3.1dvh, 24px);
+  font-weight: 650;
+  line-height: 1.3;
   color: var(--accent);
   transition: color 0.12s;
 }
+.meter[data-state='idle'] .hint {
+  color: var(--muted);
+  font-weight: 500;
+}
 
-.freq {
-  margin-top: 2px;
+.sub {
+  margin-top: 4px;
   font-size: 13px;
   line-height: 1.3;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
+.meter.stale .note,
+.meter.stale .hint {
+  opacity: 0.55;
+}
+
+.level {
+  height: 3px;
+  margin: 0 25%;
+  border-radius: 2px;
+  background: var(--surface);
+  overflow: hidden;
+}
+#level-bar {
+  height: 100%;
+  background: var(--muted);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.06s linear;
+}
+
 .startbox {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 12px 0 4px;
 }
 
 /* ---------- Saiten ---------- */
@@ -470,9 +537,6 @@ button {
   }
   .tuning-row select {
     height: 40px;
-  }
-  .freq {
-    margin-top: 0;
   }
 }
 

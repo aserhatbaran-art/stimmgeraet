@@ -3,20 +3,14 @@ import { TonePlayer } from './tone.js';
 import { TUNINGS, midiToFreq, freqToMidi, centsBetween, noteName, noteOctave, nearestString } from './tunings.js';
 
 const STORAGE_KEY = 'stimmgeraet.settings.v1';
-const IN_TUNE_CENTS = 3; // innerhalb ± 3 Cent gilt die Saite als gestimmt
-const IN_TUNE_HOLD_MS = 300; // so lange muss sie im grünen Bereich bleiben
-const HOLD_MS = 1000; // so lange bleibt die letzte Messung nach dem Ausklingen stehen
-const TEXT_INTERVAL_MS = 100; // Zahlen höchstens 10-mal pro Sekunde erneuern, damit sie lesbar bleiben
+const SCALE_RANGE = 50; // Skala reicht einen Viertelton nach unten und oben
+const IN_TUNE_ENTER = 3; // grün ab dieser Abweichung (Cent) …
+const IN_TUNE_LEAVE = 5; // … und erst ab dieser wieder nicht mehr grün (kein Flackern an der Grenze)
+const SLIGHTLY = 12; // bis hier „etwas“ höher/tiefer
+const IN_TUNE_HOLD_MS = 300; // so lange muss die Saite grün bleiben, bis sie als gestimmt gilt
+const MARKER_TAU_MS = 30; // Trägheit der Markerbewegung (nur Optik, die Messwerte sind schon geglättet)
 const A4_MIN = 430;
 const A4_MAX = 450;
-
-// Skala: Der Bereich bis ± 10 Cent ist gespreizt und belegt die halbe Skala (3° je Cent),
-// der Rest bis ± 50 Cent die andere Hälfte. Ohne Ton liegt der Zeiger links außerhalb.
-const KNEE_CENTS = 10;
-const KNEE_DEG = 30;
-const MAX_DEG = 60;
-const PARK_DEG = -73;
-const NEEDLE_TAU_MS = 35; // Trägheit des Zeigers
 
 const $ = (id) => document.getElementById(id);
 const el = {
@@ -24,16 +18,14 @@ const el = {
   tuningRow: $('tuning-row'),
   tuningSelect: $('tuning-select'),
   meter: $('meter'),
-  needle: $('needle'),
-  ticks: $('gauge-ticks'),
-  zone: $('gauge-zone'),
+  marker: $('marker'),
+  ticks: $('scale-ticks'),
   level: $('level-bar'),
   readout: $('readout'),
   noteName: $('note-name'),
   noteOctave: $('note-octave'),
-  cents: $('cents'),
   hint: $('hint'),
-  freq: $('freq'),
+  sub: $('sub'),
   strings: $('strings'),
   startbox: $('startbox'),
   start: $('btn-start'),
@@ -70,6 +62,8 @@ function loadSettings() {
   const s = { ...DEFAULTS, ...saved, tuning: { ...DEFAULTS.tuning, ...saved.tuning } };
   if (!['guitar', 'ukulele', 'chromatic'].includes(s.instrument)) s.instrument = DEFAULTS.instrument;
   s.a4 = Math.min(A4_MAX, Math.max(A4_MIN, Math.round(Number(s.a4)) || 440));
+  s.german = s.german !== false;
+  s.vibrate = s.vibrate !== false;
   return s;
 }
 
@@ -90,10 +84,8 @@ let refMode = false; // Saiten-Tasten spielen den Referenzton
 let playing = null; // Index der Saite, deren Referenzton läuft ('a4' im chromatischen Modus)
 const tuned = new Set(); // in dieser Sitzung bereits gestimmte Saiten
 
-let shownTarget = null; // MIDI-Nummer des angezeigten Zieltons, null = Ruhezustand
-let smoothCents = 0; // leicht geglättete Abweichung für Zahl und Farbe
-let lastSignal = 0;
-let lastText = 0;
+let shownTarget = null; // MIDI-Nummer des angezeigten Zieltons, null = kein Ton
+let inTune = false;
 let okSince = 0;
 let confirmed = false;
 
@@ -105,95 +97,60 @@ function currentTuning() {
 }
 
 const nameOpts = () => ({ german: settings.german, flats: !isChromatic() && !!currentTuning().flats });
+const fullName = (midi) => `${noteName(midi, nameOpts())}${noteOctave(midi)}`;
 
 // ---------- Formatierung ----------
 
-const fmt = (value, digits) => value.toFixed(digits).replace('.', ',').replace('-', '−');
-const fmtHz = (freq) => `${fmt(freq, freq < 1000 ? 2 : 1)} Hz`;
-const fmtCents = (c) => {
-  const abs = Math.abs(c);
-  const text = abs >= 20 ? String(Math.round(abs)) : fmt(abs, 1);
-  const sign = abs < 0.05 ? '±' : c > 0 ? '+' : '−';
-  return `${sign}${text} Cent`;
-};
+const fmtHz = (freq) => `${freq.toFixed(1).replace('.', ',')} Hz`;
 
 /** Text nur schreiben, wenn er sich geändert hat (spart Arbeit bei 50 Messungen pro Sekunde). */
 function setText(node, text) {
   if (node.textContent !== text) node.textContent = text;
 }
 
-// ---------- Skala und Zeiger ----------
+// ---------- Skala und Marker ----------
 
-/** Zeigerwinkel zu einer Abweichung in Cent (0° = senkrecht nach oben). */
-function centsToDeg(cents) {
-  const abs = Math.min(50, Math.abs(cents));
-  const deg =
-    abs <= KNEE_CENTS
-      ? (abs / KNEE_CENTS) * KNEE_DEG
-      : KNEE_DEG + ((abs - KNEE_CENTS) / (50 - KNEE_CENTS)) * (MAX_DEG - KNEE_DEG);
-  return Math.sign(cents) * deg;
-}
-
-function polar(deg, radius) {
-  const a = (deg * Math.PI) / 180;
-  return [160 + radius * Math.sin(a), 165 - radius * Math.cos(a)];
-}
-
-function buildGauge() {
-  const ns = 'http://www.w3.org/2000/svg';
-  const marks = [];
-  for (let c = -KNEE_CENTS; c <= KNEE_CENTS; c++) marks.push(c);
-  for (let c = 20; c <= 50; c += 10) marks.push(c, -c);
-
-  for (const c of marks) {
-    const abs = Math.abs(c);
-    const kind = c === 0 ? 'zero' : abs === 10 || abs === 50 ? 'major' : abs === 5 || abs > 10 ? 'medium' : 'minor';
-    const inner = { zero: 116, major: 124, medium: 129, minor: 134 }[kind];
-    const [x1, y1] = polar(centsToDeg(c), 140);
-    const [x2, y2] = polar(centsToDeg(c), inner);
-    const line = document.createElementNS(ns, 'line');
-    line.setAttribute('x1', x1.toFixed(1));
-    line.setAttribute('y1', y1.toFixed(1));
-    line.setAttribute('x2', x2.toFixed(1));
-    line.setAttribute('y2', y2.toFixed(1));
-    line.setAttribute('class', `tick ${kind}`);
-    el.ticks.append(line);
-  }
-  for (const c of [-50, -10, 0, 10, 50]) {
-    const [x, y] = polar(centsToDeg(c), 154);
-    const text = document.createElementNS(ns, 'text');
-    text.setAttribute('x', x.toFixed(1));
-    text.setAttribute('y', (y + 4).toFixed(1));
-    text.setAttribute('class', 'tick-label');
-    text.textContent = c === 0 ? '0' : c > 0 ? `+${c}` : `−${-c}`;
-    el.ticks.append(text);
-  }
-  const [zx1, zy1] = polar(centsToDeg(-IN_TUNE_CENTS), 140);
-  const [zx2, zy2] = polar(centsToDeg(IN_TUNE_CENTS), 140);
-  el.zone.setAttribute('d', `M${zx1.toFixed(1)} ${zy1.toFixed(1)} A140 140 0 0 1 ${zx2.toFixed(1)} ${zy2.toFixed(1)}`);
-}
-
-// Der Zeiger folgt seinem Ziel mit etwas Trägheit, wie eine echte Nadel.
-let needleDeg = PARK_DEG;
-let needleTarget = PARK_DEG;
-let needleFrame = 0;
-let needleTime = 0;
-
-function setNeedle(deg) {
-  needleTarget = deg;
-  if (!needleFrame && needleDeg !== needleTarget) {
-    needleTime = performance.now();
-    needleFrame = requestAnimationFrame(stepNeedle);
+function buildScale() {
+  for (let c = -SCALE_RANGE; c <= SCALE_RANGE; c += 5) {
+    const tick = document.createElement('span');
+    tick.className = c === 0 ? 'tick zero' : c % 25 === 0 ? 'tick major' : c % 10 === 0 ? 'tick medium' : 'tick';
+    tick.style.left = `${50 + (c / SCALE_RANGE) * 50}%`;
+    el.ticks.append(tick);
   }
 }
 
-function stepNeedle(now) {
-  const dt = Math.min(64, Math.max(0, now - needleTime));
-  needleTime = now;
-  needleDeg += (needleTarget - needleDeg) * (1 - Math.exp(-dt / NEEDLE_TAU_MS));
-  if (Math.abs(needleTarget - needleDeg) < 0.05) needleDeg = needleTarget;
-  el.needle.style.transform = `rotate(${needleDeg.toFixed(2)}deg)`;
-  needleFrame = needleDeg === needleTarget ? 0 : requestAnimationFrame(stepNeedle);
+// Der Marker gleitet mit kurzer Trägheit zur neuen Position (−1 … +1 = linker … rechter Rand).
+let markerPos = 0;
+let markerTarget = 0;
+let markerFrame = 0;
+let markerTime = 0;
+
+function setMarker(cents, jump = false) {
+  markerTarget = Math.max(-1, Math.min(1, cents / SCALE_RANGE));
+  if (jump) {
+    // Neuer Ton: direkt an die gemessene Stelle, ohne über die Skala zu wandern
+    markerPos = markerTarget;
+    drawMarker();
+    return;
+  }
+  if (!markerFrame && markerPos !== markerTarget) {
+    markerTime = performance.now();
+    markerFrame = requestAnimationFrame(stepMarker);
+  }
+}
+
+function stepMarker(now) {
+  const dt = Math.min(64, Math.max(0, now - markerTime));
+  markerTime = now;
+  markerPos += (markerTarget - markerPos) * (1 - Math.exp(-dt / MARKER_TAU_MS));
+  if (Math.abs(markerTarget - markerPos) < 0.0005) markerPos = markerTarget;
+  drawMarker();
+  markerFrame = markerPos === markerTarget ? 0 : requestAnimationFrame(stepMarker);
+}
+
+function drawMarker() {
+  // Der Marker ist so breit wie die Skala; 50 % seiner Breite = halbe Skala
+  el.marker.style.transform = `translateX(${(markerPos * 50).toFixed(2)}%)`;
 }
 
 // ---------- Anzeige aufbauen ----------
@@ -257,17 +214,16 @@ function setNote(midi) {
   setText(el.noteOctave, midi === null ? '' : String(noteOctave(midi)));
 }
 
-/** Ruhezustand: kein Ton zu hören. Der Zeiger fährt in die Ruheposition links. */
+/** Ruhezustand: kein Ton zu hören. Der Marker verschwindet. */
 function showIdle() {
   shownTarget = null;
+  inTune = false;
   okSince = 0;
   confirmed = false;
   el.meter.dataset.state = 'idle';
-  el.meter.classList.remove('hold');
-  setNeedle(PARK_DEG);
-  el.cents.innerHTML = '&nbsp;';
+  el.meter.classList.remove('stale', 'weak');
 
-  // Solange das Mikrofon aus ist, steht an Stelle der Messwerte die Einschalt-Taste
+  // Solange das Mikrofon aus ist, steht an Stelle der Hinweise die Einschalt-Taste
   const showStart = !tuner.running && playing === null;
   el.startbox.hidden = !showStart;
   el.readout.hidden = showStart;
@@ -276,43 +232,37 @@ function showIdle() {
     const midi = playing === 'a4' ? 69 : currentTuning().strings[playing];
     setNote(midi);
     setText(el.hint, 'Referenzton läuft');
-    setText(el.freq, fmtHz(midiToFreq(midi, settings.a4)));
+    setText(el.sub, fmtHz(midiToFreq(midi, settings.a4)));
   } else if (!isChromatic() && refMode) {
     setNote(null);
-    setText(el.hint, 'Saite antippen, um den Ton zu hören');
-    el.freq.innerHTML = '&nbsp;';
+    setText(el.hint, 'Saite antippen, um ihren Ton zu hören');
+    setText(el.sub, ' ');
   } else if (!isChromatic() && locked !== null) {
     const midi = currentTuning().strings[locked];
     setNote(midi);
-    setText(el.hint, 'Saite anzupfen');
-    setText(el.freq, `Ziel ${fmtHz(midiToFreq(midi, settings.a4))}`);
+    setText(el.hint, `Saite ${currentTuning().strings.length - locked} anzupfen`);
+    setText(el.sub, `Ziel ${fmtHz(midiToFreq(midi, settings.a4))}`);
   } else {
     setNote(null);
     setText(el.hint, isChromatic() ? 'Ton spielen' : 'Saite anzupfen');
-    el.freq.innerHTML = '&nbsp;';
+    setText(el.sub, ' ');
   }
   updateStringStates(playing === null && !refMode ? locked : null);
 }
 
 // ---------- Messergebnisse ----------
 
-function onResult({ freq, rms, ms }) {
-  const db = rms > 0 ? 20 * Math.log10(rms) : -100;
-  el.level.style.transform = `scaleX(${Math.max(0, Math.min(1, (db + 60) / 50)).toFixed(3)})`;
+function onResult({ freq, stale, weak, levelDb, floorDb, ms }) {
+  // Pegelbalken: Abstand zum Rauschen (0 … 30 dB)
+  const snr = levelDb - floorDb;
+  el.level.style.transform = `scaleX(${Math.max(0, Math.min(1, snr / 30)).toFixed(3)})`;
   if (testFreq) recordTestStats(freq, ms);
 
   if (playing !== null || (refMode && !isChromatic())) return;
-
-  const now = performance.now();
   if (freq === null) {
-    if (shownTarget === null) return;
-    const silent = now - lastSignal;
-    if (silent > HOLD_MS) showIdle();
-    else if (silent > 200) el.meter.classList.add('hold');
+    if (shownTarget !== null) showIdle();
     return;
   }
-  lastSignal = now;
-  el.meter.classList.remove('hold');
 
   let targetMidi;
   let stringIndex = null;
@@ -327,44 +277,43 @@ function onResult({ freq, rms, ms }) {
   const cents = centsBetween(freq, targetFreq);
 
   const changed = shownTarget !== targetMidi;
-  if (changed) {
-    shownTarget = targetMidi;
-    smoothCents = cents;
-    okSince = 0;
-    confirmed = false;
-  } else {
-    smoothCents += (cents - smoothCents) * 0.5;
-  }
-
-  // Der Zeiger bekommt den ungeglätteten Wert; seine Trägheit glättet genug.
-  setNeedle(centsToDeg(cents));
-
-  const inTune = Math.abs(smoothCents) <= IN_TUNE_CENTS;
-  el.meter.dataset.state = inTune ? 'ok' : smoothCents < 0 ? 'low' : 'high';
+  shownTarget = targetMidi;
+  setMarker(cents, changed);
   setNote(targetMidi);
-  setText(el.hint, inTune ? 'Gestimmt ✓' : smoothCents < 0 ? 'Zu tief – höher stimmen ↑' : 'Zu hoch – tiefer stimmen ↓');
 
-  if (changed || now - lastText >= TEXT_INTERVAL_MS) {
-    lastText = now;
-    setText(el.cents, fmtCents(smoothCents));
-    // Weit daneben: zusätzlich anzeigen, welcher Ton tatsächlich klingt
-    const heard = Math.round(freqToMidi(freq, settings.a4));
-    const heardText = Math.abs(cents) > 50 ? ` (${noteName(heard, nameOpts())}${noteOctave(heard)})` : '';
-    setText(el.freq, `${fmtHz(freq)}${heardText} · Ziel ${fmtHz(targetFreq)}`);
-  }
+  // Grün mit Hysterese, damit die Farbe an der Grenze nicht flackert
+  inTune = Math.abs(cents) <= (inTune && !changed ? IN_TUNE_LEAVE : IN_TUNE_ENTER);
+  el.meter.dataset.state = inTune ? 'ok' : cents < 0 ? 'low' : 'high';
+  el.meter.classList.toggle('stale', stale);
+  el.meter.classList.toggle('weak', weak && !stale);
 
-  if (inTune) {
-    if (!okSince) okSince = now;
-    if (!confirmed && now - okSince >= IN_TUNE_HOLD_MS) {
+  setText(el.hint, hintFor(cents));
+  if (stale) setText(el.sub, 'Ton ist verklungen – neu anzupfen');
+  else if (weak) setText(el.sub, 'Sehr leise – kräftiger zupfen oder Handy näher halten');
+  else if (Math.abs(cents) > SCALE_RANGE) setText(el.sub, `Klingt wie ${fullName(Math.round(freqToMidi(freq, settings.a4)))} · Ziel ${fullName(targetMidi)}`);
+  else setText(el.sub, `${fmtHz(freq)} · Ziel ${fmtHz(targetFreq)}`);
+
+  if (inTune && !stale && !weak) {
+    if (changed || !okSince) okSince = performance.now();
+    if (!confirmed && performance.now() - okSince >= IN_TUNE_HOLD_MS) {
       confirmed = true;
       if (stringIndex !== null) tuned.add(stringIndex);
       if (settings.vibrate && navigator.userActivation?.hasBeenActive !== false) navigator.vibrate?.(40);
     }
-  } else {
+  } else if (!inTune) {
     okSince = 0;
-    if (Math.abs(smoothCents) > IN_TUNE_CENTS * 2) confirmed = false;
+    confirmed = false;
+  } else {
+    okSince = 0; // grün, aber veraltet oder zu leise: Haltezeit neu beginnen
   }
   updateStringStates(stringIndex);
+}
+
+function hintFor(cents) {
+  if (inTune) return 'Gestimmt ✓';
+  const abs = Math.abs(cents);
+  if (cents < 0) return abs > SCALE_RANGE ? 'Viel zu tief – höher stimmen' : abs <= SLIGHTLY ? 'Etwas höher stimmen' : 'Höher stimmen';
+  return abs > SCALE_RANGE ? 'Viel zu hoch – tiefer stimmen' : abs <= SLIGHTLY ? 'Etwas tiefer stimmen' : 'Tiefer stimmen';
 }
 
 // ---------- Mikrofon ----------
@@ -374,6 +323,8 @@ const tone = new TonePlayer();
 const params = new URLSearchParams(location.search);
 const testFreq = Number(params.get('test')) || 0; // Testmodus: künstlicher Ton statt Mikrofon
 const testDelay = Number(params.get('delay')) || 0;
+const levelParam = Number(params.get('level'));
+const testLevel = Number.isFinite(levelParam) && params.has('level') ? Math.min(0, Math.max(-100, levelParam)) : -20;
 let wakeLock = null;
 
 /** Testmodus: Reaktionszeit und Rechenzeit festhalten (auslesbar über das data-Attribut). */
@@ -400,7 +351,7 @@ const ERRORS = {
 async function startTuner() {
   el.error.hidden = true;
   try {
-    await tuner.start({ testFreq, testDelay });
+    await tuner.start({ testFreq, testDelay, testLevel });
     requestWakeLock();
   } catch (err) {
     el.error.textContent = ERRORS[err.name] ?? `Das Mikrofon konnte nicht gestartet werden (${err.name}).`;
@@ -578,8 +529,8 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- Start ----------
 
-buildGauge();
-el.needle.style.transform = `rotate(${PARK_DEG}deg)`;
+buildScale();
+drawMarker();
 renderAll();
 autoStart();
 

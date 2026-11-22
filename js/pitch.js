@@ -22,20 +22,29 @@ export class PitchDetector {
    * @param {number} [options.minFreq=60]     tiefste erkennbare Frequenz
    * @param {number} [options.maxFreq=1400]   höchste erkennbare Frequenz
    * @param {number} [options.threshold=0.93] Anteil des höchsten Maximums, ab dem ein früheres Maximum gewählt wird
-   * @param {number} [options.minClarity=0.9] Mindest-Klarheit (0…1), darunter gilt das Signal als Geräusch
-   * @param {number} [options.minRms=0.002]   Mindestpegel, darunter gilt das Signal als Stille
+   * @param {number} [options.octaveThreshold=0.8] Oktavprüfung: Die halbe (bzw. drittel) Periode wird gewählt, wenn ihr
+   *                                          Maximum mindestens diesen Anteil erreicht. Bei Saitentönen liegt dieser Wert
+   *                                          für eine falsche kürzere Periode weit darunter (ungerade Obertöne löschen sich aus).
+   * @param {number} [options.minClarity=0.5] Mindest-Klarheit (0…1), darunter wird kein Ton gemeldet.
+   *                                          Bewusst niedrig: Ob ein Ton angezeigt wird, entscheidet der Tracker
+   *                                          (tracker.js) anhand von Klarheit, Rauschabstand und Verlauf.
+   * @param {number} [options.minRms=0.00001] Mindestpegel, darunter gilt das Signal als Stille
+   * @param {number} [options.lowpass=4000]   Tiefpass (Hz) vor der Feinsuche; entfernt Rauschen oberhalb der wichtigen Obertöne
    * @param {number} [options.minWindow=2048] kleinstes Auswertefenster in Samples
-   * @param {number} [options.periods=8]      so viele Perioden soll das Auswertefenster mindestens enthalten
+   * @param {number} [options.periods=30]     bis zu so vielen Perioden wird ausgewertet (mehr Perioden = weniger Streuung)
    */
   constructor(sampleRate, options = {}) {
     this.sampleRate = sampleRate;
     this.minFreq = options.minFreq ?? 60;
     this.maxFreq = options.maxFreq ?? 1400;
     this.threshold = options.threshold ?? 0.93;
-    this.minClarity = options.minClarity ?? 0.9;
-    this.minRms = options.minRms ?? 0.002;
+    this.octaveThreshold = options.octaveThreshold ?? 0.8;
+    this.minClarity = options.minClarity ?? 0.5;
+    this.minRms = options.minRms ?? 0.00001;
+    // Zweifacher Einpol-Tiefpass; Koeffizient aus der Grenzfrequenz
+    this.lpCoef = 1 - Math.exp((-2 * Math.PI * (options.lowpass ?? 4000)) / sampleRate);
     this.minWindow = options.minWindow ?? 2048;
-    this.periods = options.periods ?? 8;
+    this.periods = options.periods ?? 30;
     this.decimation = Math.max(1, Math.round(sampleRate / 12000));
     this._x = null; // Auswertefenster bei voller Abtastrate
     this._len = 0;
@@ -73,11 +82,36 @@ export class PitchDetector {
     }
     if (!coarse) return { freq: null, clarity: 0, rms };
 
-    this._load(input, Math.min(len, Math.max(this.minWindow, Math.ceil(coarse * this.periods))));
+    // Lange Fenster (bis zu `periods` Perioden) streuen weniger. Hat sich der Ton innerhalb des
+    // Fensters geändert (Saitenwechsel ohne Pause), ist ein kurzes Fenster klarer → dann dieses nehmen.
+    const longLen = Math.min(len, Math.max(this.minWindow, Math.ceil(coarse * this.periods)));
+    const shortLen = Math.min(len, Math.max(this.minWindow, Math.ceil(coarse * 8)));
+    let m = this._measure(input, longLen, coarse);
+    if (shortLen < longLen && (!m || m.clarity < 0.8)) {
+      const alt = this._measure(input, shortLen, coarse);
+      if (alt && (!m || alt.clarity > m.clarity + 0.15)) m = alt;
+    }
+    if (!m) return { freq: null, clarity: 0, rms };
+    if (m.clarity < this.minClarity) return { freq: null, clarity: m.clarity, rms };
+
+    // Die Feinsuche muss im Fenster laufen, aus dem m stammt (evtl. wurde danach ein anderes geladen)
+    if (this._len !== m.len) this._load(input, m.len);
+    const freq = this.sampleRate / this._refine(m.lag, m.clarity);
+    if (freq < this.minFreq || freq > this.maxFreq) return { freq: null, clarity: m.clarity, rms };
+    return { freq, clarity: m.clarity, rms };
+  }
+
+  /**
+   * Feinsuche in den jüngsten `len` Samples, ausgehend von der Grobsuche.
+   * Lässt das Auswertefenster geladen, damit _refine anschließend darauf arbeitet.
+   * @returns {{lag: number, clarity: number, len: number}|null}
+   */
+  _measure(input, len, coarse) {
+    this._load(input, len);
     const minLag = Math.max(2, Math.floor(this.sampleRate / this.maxFreq));
 
     let peak = this._peakNear(Math.round(coarse), this.decimation + 1);
-    if (!peak) return { freq: null, clarity: 0, rms };
+    if (!peak) return null;
 
     // Oktavprüfung: Hat die Grobsuche ein Vielfaches der Periode erwischt?
     for (let changed = true; changed; ) {
@@ -86,20 +120,14 @@ export class PitchDetector {
         const lag = Math.round(peak.lag / div);
         if (lag < minLag) continue;
         const shorter = this._peakNear(lag, 2);
-        if (shorter && shorter.val >= this.threshold * peak.val) {
+        if (shorter && shorter.val >= this.octaveThreshold * peak.val) {
           peak = shorter;
           changed = true;
           break;
         }
       }
     }
-
-    const clarity = Math.min(1, peak.val);
-    if (clarity < this.minClarity) return { freq: null, clarity, rms };
-
-    const freq = this.sampleRate / this._refine(peak.lag, clarity);
-    if (freq < this.minFreq || freq > this.maxFreq) return { freq: null, clarity, rms };
-    return { freq, clarity, rms };
+    return { lag: peak.lag, clarity: Math.min(1, peak.val), len };
   }
 
   /**
@@ -199,7 +227,7 @@ export class PitchDetector {
         if (val > highest) highest = val;
       }
     }
-    if (highest < 0.8) return 0;
+    if (highest < this.minClarity) return 0;
 
     const limit = this.threshold * highest;
     for (const peak of peaks) {
@@ -216,7 +244,15 @@ export class PitchDetector {
     let mean = 0;
     for (let i = 0; i < len; i++) mean += input[start + i];
     mean /= len;
-    for (let i = 0; i < len; i++) x[i] = input[start + i] - mean;
+    // Tiefpass (zwei Einpol-Stufen). Ein Filter verschiebt Phasen, aber nicht die Periodendauer.
+    const a = this.lpCoef;
+    let s1 = input[start] - mean;
+    let s2 = s1;
+    for (let i = 0; i < len; i++) {
+      s1 += a * (input[start + i] - mean - s1);
+      s2 += a * (s1 - s2);
+      x[i] = s2;
+    }
     this._len = len;
   }
 
