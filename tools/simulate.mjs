@@ -5,9 +5,11 @@
  * Aufruf:  node tools/simulate.mjs [pfad/zu/alter/pitch.js]
  * Umgebungsvariable TRACKER='{"q":800}' setzt Tracker-Optionen zum Ausprobieren.
  * Mit Pfad wird zusätzlich die alte Verarbeitung (Version 1.1) zum Vergleich gemessen.
+ * Am Ende: Störgeräusche (Sprechen, Klopfen, Pfeifen, Klappern) ohne gezupfte Saite.
  */
 import { pluck } from './sim/guitar.mjs';
 import { SR, WINDOW, STEP_MS, run, newPipeline as makeNew, oldPipeline } from './sim/bench.mjs';
+import { INTERFERENCE, interference, interferenceSignal } from './sim/interference.mjs';
 import { pathToFileURL } from 'node:url';
 
 const newPipeline = () => makeNew(process.env.TRACKER ? JSON.parse(process.env.TRACKER) : {});
@@ -88,10 +90,29 @@ function ghosts(makePipeline) {
   console.log(`Geistertöne im reinen Rauschen: ${shown} von ${frames} Takten`);
 }
 
-const oldPath = process.argv[2];
-if (oldPath) {
-  const { PitchDetector: OldDetector } = await import(pathToFileURL(oldPath).href);
-  report('Version 1.1 (alt)', () => oldPipeline(OldDetector));
+/** Störgeräusche ohne Saite: Anteil der Zeit mit Anzeige (Gitarre mit Tonumfang, chromatisch ohne). */
+function noiseReport(makePipeline) {
+  for (const [label, range] of [['Gitarre', [55, 440]], ['chromatisch', null]]) {
+    console.log(`
+Störgeräusche ohne Saite (${label}): Anteil der Zeit mit Anzeige / Zahl der angezeigten Töne`);
+    for (const [name, make] of INTERFERENCE) {
+      const cells = [-55, -45, -35].map((level) => {
+        const r = interference(() => makePipeline({ range }), interferenceSignal(make, level));
+        return `${level} dB: ${r.share.toFixed(1).padStart(5)} % / ${String(r.events).padStart(2)}`;
+      });
+      console.log(`  ${name.padEnd(15)} ${cells.join('   ')}`);
+    }
+  }
 }
-report('Neu', newPipeline);
-ghosts(newPipeline);
+
+// Nur als Programm ausführen, nicht beim Import der Szenarien
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const oldPath = process.argv[2];
+  if (oldPath) {
+    const { PitchDetector: OldDetector } = await import(pathToFileURL(oldPath).href);
+    report('Version 1.1 (alt)', () => oldPipeline(OldDetector));
+  }
+  report('Neu', newPipeline);
+  ghosts(newPipeline);
+  noiseReport((o) => makeNew({ ...(process.env.TRACKER ? JSON.parse(process.env.TRACKER) : {}), ...o }));
+}

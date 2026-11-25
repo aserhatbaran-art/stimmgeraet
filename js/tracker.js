@@ -8,7 +8,11 @@
  *  - Rauschpegel wird laufend geschätzt; ein Ton zählt, wenn er sich davon abhebt.
  *    So werden auch sehr leise Saiten erkannt, ohne dass Raumgeräusche Töne erzeugen.
  *  - Hysterese: Ein neuer Ton braucht strengere Bedingungen (klar, deutlich über dem
- *    Rauschen, zwei übereinstimmende Messungen) als ein bereits verfolgter, ausklingender Ton.
+ *    Rauschen, vier übereinstimmende Messungen) als ein bereits verfolgter, ausklingender Ton.
+ *  - Störgeräusche: Ein neuer Ton muss im Tonumfang des Instruments liegen, über 60 ms eine
+ *    feste Tonhöhe halten und darf nicht sofort verklingen. Sprechen (gleitende Tonhöhe),
+ *    Klopfen (verklingt sofort) und Pfeifen (zu hoch) werden so nicht angezeigt. Nach
+ *    verworfenen Störungen gilt einige Sekunden lang eine längere Probezeit (200 ms).
  *  - Oktavsprünge innerhalb eines verfolgten Tons werden korrigiert, einzelne Ausreißer verworfen.
  *  - Glättung mit einem Kalman-Filter (Tonhöhe + Änderungsgeschwindigkeit): Jede Messung
  *    wird nach ihrer Zuverlässigkeit gewichtet – unsichere Messungen bewegen die Anzeige kaum.
@@ -21,6 +25,7 @@
 const toCents = (freq) => 1200 * Math.log2(freq / 440);
 const toFreq = (cents) => 440 * 2 ** (cents / 1200);
 const OCTAVE_JUMPS = [-1200, 1200, -1902, 1902]; // Oktave und Duodezime (Grundton verfehlt / dritter Oberton)
+const SUB_JUMPS = [-1200, -1902, -2400]; // gemeinsame tiefere Periode von Saite und Störgeräusch
 
 
 export class Tracker {
@@ -65,6 +70,18 @@ export class Tracker {
     this.reliable = o.reliable ?? 0.75;
     this.sigmaBase = o.sigmaBase ?? 1.8;
     this.sigmaSlope = o.sigmaSlope ?? 54;
+    this.confirmFrames = o.confirmFrames ?? 4;
+    this.busyFrames = o.busyFrames ?? 10;
+    this.confirmSpread = o.confirmSpread ?? 10;
+    this.weakSpread = o.weakSpread ?? 20;
+    this.maxDrop = o.maxDrop ?? 5;
+    this.busyMs = o.busyMs ?? 3000;
+    this.busyLevel = o.busyLevel ?? 0.5; // eine verworfene Störfolge wirkt so rund 2 s nach
+    this.subFrames = o.subFrames ?? 8;
+    this.disturbed = o.disturbed ?? 0.08;
+    this.snapSpread = o.snapSpread ?? 4;
+    this.snapDistance = o.snapDistance ?? 6;
+    this.setRange(o.range ?? null);
     this.reset();
   }
 
@@ -79,6 +96,10 @@ export class Tracker {
     this.rejects = 0; // als Ausreißer verworfene Messungen in Folge
     this.trackStart = 0; // Beginn des verfolgten Tons
     this.trackStartDb = 0; // Pegel zu Beginn des verfolgten Tons
+    this.clarity = 0.9; // übliche Klarheit des verfolgten Tons (gleitender Mittelwert)
+    this.trackDb = -100; // üblicher Pegel des verfolgten Tons (gleitender Mittelwert)
+    this.lastOnset = -Infinity;
+    this.prevX = null; // Tonhöhe der zuvor angezeigten, evtl. noch nachklingenden Saite
     this.slowDb = null; // träger Pegel zur Anschlagerkennung
     this.x = null; // geschätzte Tonhöhe (Cent relativ zu A4)
     this.v = 0; // geschätzte Änderungsgeschwindigkeit (Cent/s)
@@ -86,8 +107,11 @@ export class Tracker {
     this.lastAccept = -Infinity;
     this.lastMove = -Infinity; // letzte Messung, die den Zeiger bewegen durfte
     this.lastUpdate = 0;
-    this.candidate = null; // möglicher neuer Ton, wartet auf Bestätigung
+    this.cands = []; // möglicher neuer Ton: letzte übereinstimmende Messungen, warten auf Bestätigung
+    this.busy = 0; // Maß für kürzlich verworfene Störgeräusche (klingt mit busyMs ab)
+    this.lastFrame = 0;
     this.weak = []; // letzte unsichere Messungen eines möglichen sehr leisen Tons
+    this.clean = []; // letzte saubere Messungen des verfolgten Tons (zum Zurückspringen nach Störungen)
   }
 
   /**
@@ -108,6 +132,7 @@ export class Tracker {
 
     // Anschlag: Pegel springt deutlich über den bisherigen Verlauf
     const onset = this.slowDb !== null && db > this.slowDb + 9;
+    if (onset) this.lastOnset = now;
     this.slowDb = this.slowDb === null ? db : this.slowDb + (db - this.slowDb) * 0.3;
 
     // Rauschpegel: aus Messungen ohne Ton, schnell nach unten, langsam nach oben.
@@ -132,15 +157,25 @@ export class Tracker {
     const tracking = this.x !== null && now - this.lastAccept <= this.holdMs;
     const strong = pos !== null && r.clarity >= this.startClarity && snr >= this.startSnr;
     let accepted = null;
+    let sub = false;
 
     if (pos !== null && tracking && !onset && r.clarity >= this.keepClarity && snr >= this.keepSnr) {
-      // Verfolgter Ton: Oktavfehler unsicherer Messungen auf die Lage des Tons zurückführen.
-      // Klare Messungen werden nicht korrigiert – sonst bliebe ein falsch erkannter Beginn
-      // in der falschen Oktave hängen. Sie laufen unten als möglicher neuer Ton weiter.
+      // Verfolgter Ton: Oktavfehler unsicherer Messungen werden unten auf die Lage des Tons
+      // zurückgeführt. Klare Messungen nicht – sonst bliebe ein falsch erkannter Beginn in der
+      // falschen Oktave hängen. Sie laufen unten als möglicher neuer Ton weiter.
+      // Klingt ein Störgeräusch mit, findet die Erkennung oft eine gemeinsame, tiefere Periode
+      // (eine oder zwei Oktaven oder eine Duodezime unter der Saite). Ohne Anschlag und ohne
+      // Pegelanstieg ist eine klare Messung dort zweideutig: Störung oder leiser gezupfte tiefere
+      // Saite. Sie bewegt die Anzeige nicht, kann aber unten mit längerer Probezeit (subFrames)
+      // einen neuen Ton starten – eine Störung ist bis dahin meist vorbei.
+      const mixed = now - this.trackStart > 300 && now - this.lastOnset > 250 && db < this.trackDb + 3;
+      sub = strong && mixed && SUB_JUMPS.some((jump) => Math.abs(pos - this.x - jump) < this.window);
+    }
+    if (pos !== null && tracking && !onset && r.clarity >= this.keepClarity && snr >= this.keepSnr && !sub) {
       let p = pos;
       let corrected = false;
-      for (const jump of OCTAVE_JUMPS) {
-        if (Math.abs(p - this.x - jump) < this.window && !strong) {
+      for (const jump of strong ? [] : OCTAVE_JUMPS) {
+        if (Math.abs(p - this.x - jump) < this.window) {
           p -= jump;
           corrected = true;
           break;
@@ -148,44 +183,109 @@ export class Tracker {
       }
       // Weniger verlässlich und daher geringer gewichtet: korrigierte Oktavfehler und Messungen
       // knapp über dem Rauschen (Raumrauschen im Bereich des Tons verschiebt die Messung)
-      const sigma = this.sigma(r.clarity) * (corrected ? 2 : 1) * Math.min(4, Math.max(1, 15 / Math.max(snr, 1)));
-      const reliable = r.clarity >= this.reliable && !corrected && snr >= 10;
+      // Deutlich weniger klar als bisher bei diesem Ton: Ein zweites Geräusch (z. B. eine Stimme)
+      // klingt mit und verschiebt die Messung → kaum gewichten.
+      const disturbed = r.clarity < this.clarity - this.disturbed;
+      this.clarity += (r.clarity - this.clarity) * 0.1;
+      const sigma =
+        this.sigma(r.clarity) * (corrected ? 2 : 1) * (disturbed ? 3 : 1) * Math.min(4, Math.max(1, 15 / Math.max(snr, 1)));
+      const reliable = r.clarity >= this.reliable && !corrected && !disturbed && snr >= 10;
       const moves = r.clarity >= this.moveClarity && snr >= this.moveSnr;
       const R = sigma * sigma * this.overlap * (moves ? 1 : 4);
       if (Math.abs(p - this.x) <= this.window && this._update(p, R, now, reliable && moves)) {
         accepted = p;
+        if (!corrected) this.trackDb += (db - this.trackDb) * 0.2;
         if (moves) this.lastMove = now;
       }
+      // Nach einer Störung zurückspringen: Drei saubere, übereinstimmende Messungen in Folge,
+      // aber die Anzeige liegt daneben → sie wurde von der Störung weggezogen.
+      const clean = !corrected && !disturbed && r.clarity >= 0.85 && snr >= this.moveSnr && Math.abs(p - this.x) <= this.window;
+      if (clean) {
+        this.clean.push(p);
+        if (this.clean.length > 3) this.clean.shift();
+      } else {
+        this.clean.length = 0;
+      }
+      if (this.clean.length === 3) {
+        const mean = (this.clean[0] + this.clean[1] + this.clean[2]) / 3;
+        const spread = Math.max(...this.clean) - Math.min(...this.clean);
+        if (spread <= this.snapSpread && Math.abs(mean - this.x) > this.snapDistance) {
+          this.x = mean;
+          this.v = 0;
+          this.P = [this.sigma(r.clarity) ** 2 * this.overlap, 0, this.P[2]];
+          this.lastUpdate = now;
+          this.rejects = 0;
+          accepted = mean;
+          this.lastMove = now;
+        }
+      }
+    } else {
+      this.clean.length = 0;
     }
 
-    if (accepted === null && strong) {
-      // Neuer Ton (oder Wechsel): erst übernehmen, wenn zwei Messungen übereinstimmen.
-      // Eine sehr klare Messung kurz nach einem Anschlag genügt allein.
-      const c = this.candidate;
-      const confirmed = c && now - c.t <= 70 && Math.abs(pos - c.pos) < 35;
-      const decisive = onset || (r.clarity >= 0.95 && snr >= 15);
-      if (confirmed || (decisive && !tracking)) {
-        this._init(pos, this.sigma(r.clarity) ** 2, now);
-        this._newTrack(now, db);
-        this.candidate = null;
-        accepted = pos;
+    // Störgeräusche: Eine Saite klingt nach dem Anschlag mit fast fester Tonhöhe weiter und wird
+    // nur langsam leiser. Sprechen gleitet in der Tonhöhe, Klopfen verklingt sofort, Pfeifen liegt
+    // außerhalb des Instruments. Ein neuer Ton muss deshalb im Tonumfang liegen und über mehrere
+    // Messungen stabil sein. Wurden kürzlich solche Störungen verworfen, gilt eine längere Probezeit.
+    this.busy *= Math.exp(-(now - this.lastFrame) / this.busyMs);
+    this.lastFrame = now;
+    const inRange = pos !== null && (!this.range || (r.freq >= this.range[0] && r.freq <= this.range[1]));
+    // Auch etwas unsicherere Messungen setzen eine begonnene Folge fort (z. B. während die
+    // vorige Saite noch nachklingt); für den Start muss aber die Hälfte der Folge klar sein.
+    // Die zuletzt angeschlagene Saite hat Vorrang: Die vorige klingt oft noch nach und dominiert
+    // zeitweise die Messung. Zu ihr wird nur zurückgewechselt, wenn sie neu angeschlagen wird.
+    const previous =
+      pos !== null &&
+      this.prevX !== null &&
+      tracking &&
+      Math.abs(pos - this.prevX) <= 25 &&
+      now - this.lastOnset > 250 &&
+      db < this.trackDb + 3;
+    const usable = accepted === null && inRange && !previous && r.clarity >= this.keepClarity && snr >= this.moveSnr;
+    const last = this.cands[this.cands.length - 1];
+    if (last && accepted !== null && Math.abs(accepted - last.pos) <= 25) {
+      this.cands.length = 0; // die Folge gehört zum verfolgten Ton – keine Störung
+    } else if (last && (now - last.t > 50 || (usable && Math.abs(pos - last.pos) > 25))) {
+      this._abandon();
+    }
+
+    if (usable && (strong || this.cands.length > 0)) {
+      this.cands.push({ pos, t: now, db, strong, sub });
+      if (this.cands.length > Math.max(this.busyFrames, this.subFrames)) this.cands.shift();
+      const need = this.cands.some((c) => c.sub)
+        ? this.subFrames
+        : this.busy >= this.busyLevel
+          ? this.busyFrames
+          : this.confirmFrames;
+      const p = this._stable(need, this.confirmSpread);
+      if (p !== null) {
+        this.prevX = tracking ? this.x : null;
+        this._init(p, this.sigma(r.clarity) ** 2, now);
+        this._newTrack(now, db, r.clarity);
+        this.cands.length = 0;
+        accepted = p;
         this.lastMove = now;
-      } else {
-        this.candidate = { pos, t: now };
       }
     }
 
     // Sehr leiser Ton: mehrere unsichere, aber übereinstimmende Messungen in Folge
     if (accepted === null && !tracking) {
-      if (pos !== null && r.clarity >= this.keepClarity + 0.05 && snr >= this.keepSnr - 1) {
-        this.weak.push(pos);
+      if (inRange && r.clarity >= this.keepClarity + 0.05 && snr >= this.keepSnr - 1) {
+        const prev = this.weak[this.weak.length - 1];
+        if (prev && now - prev.t > 50) this.weak.length = 0; // nur Messungen in Folge zählen
+        this.weak.push({ pos, strong, db, t: now });
         if (this.weak.length > this.weakFrames) this.weak.shift();
         if (this.weak.length === this.weakFrames) {
-          const sorted = [...this.weak].sort((a, b) => a - b);
+          const sorted = this.weak.map((w) => w.pos).sort((a, b) => a - b);
           const median = sorted[sorted.length >> 1];
-          if (sorted[sorted.length - 1] - sorted[0] <= 20) {
+          // Die größere Streuung ist nur für Töne knapp über dem Rauschen gedacht. Laute, klare
+          // Messungen (z. B. Sprechen) müssen so stabil sein wie beim normalen Start.
+          const spread = this.weak.some((w) => w.strong) ? this.confirmSpread : this.weakSpread;
+          const fading = this.weak[this.weak.length - 1].db < this.weak[0].db - this.maxDrop;
+          if (sorted[sorted.length - 1] - sorted[0] <= spread && !fading && this.busy < this.busyLevel) {
+            this.prevX = null;
             this._init(median, this.sigma(r.clarity) ** 2, now);
-            this._newTrack(now, db);
+            this._newTrack(now, db, r.clarity);
             accepted = median; // bleibt „schwach“: lastMove wird nicht gesetzt
           }
         }
@@ -200,7 +300,41 @@ export class Tracker {
     return this._output(now, db);
   }
 
-  _newTrack(now, db) {
+  /**
+   * Prüft, ob die letzten `count` Kandidaten einen stabilen Ton bilden: Tonhöhe innerhalb
+   * `spread` Cent und Pegel nicht schnell abfallend. Liefert dann die jüngste Tonhöhe, sonst null.
+   */
+  _stable(count, spread) {
+    const c = this.cands;
+    if (c.length < count) return null;
+    let lo = Infinity;
+    let hi = -Infinity;
+    let clear = 0;
+    for (let i = c.length - count; i < c.length; i++) {
+      lo = Math.min(lo, c[i].pos);
+      hi = Math.max(hi, c[i].pos);
+      if (c[i].strong) clear++;
+    }
+    if (hi - lo > spread || 2 * clear < count) return null;
+    if (c[c.length - 1].db < c[c.length - count].db - this.maxDrop) return null;
+    return c[c.length - 1].pos;
+  }
+
+  /** Kandidatenfolge abbrechen; wer mehrfach klang und nicht bestätigt wurde, war eine Störung. */
+  _abandon() {
+    if (this.cands.filter((c) => c.strong).length >= 2) this.busy += 1;
+    this.cands.length = 0;
+  }
+
+  /** Tonumfang des Instruments (Hz); null = alle Töne (chromatisch). */
+  setRange(range) {
+    const [lo, hi] = Array.isArray(range) ? range.map(Number) : [];
+    this.range = Number.isFinite(lo) && Number.isFinite(hi) && lo > 0 && hi > lo ? [lo, hi] : null;
+  }
+
+  _newTrack(now, db, clarity = 0.9) {
+    this.clarity = clarity;
+    this.trackDb = db;
     this.trackStart = now;
     this.trackStartDb = db;
   }

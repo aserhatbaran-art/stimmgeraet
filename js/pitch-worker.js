@@ -3,7 +3,8 @@
  * Berechnung weder die Anzeige noch das Antippen der Tasten.
  *
  * Nachrichten:
- *   { sampleRate }        → Erkennung einrichten (setzt auch den Tracker zurück)
+ *   { sampleRate, range } → Erkennung einrichten (setzt auch den Tracker zurück)
+ *   { range }             → Tonumfang des Instruments ändern ([tiefste, höchste] Hz oder null)
  *   { buffer, time }      → Samples auswerten; time = Aufnahmezeitpunkt in ms.
  *                           Der Puffer wird mit dem Ergebnis zurückgegeben.
  */
@@ -16,7 +17,11 @@ let tracker = null;
 self.onmessage = ({ data }) => {
   if (data.sampleRate) {
     detector = new PitchDetector(data.sampleRate);
-    tracker = new Tracker();
+    tracker = new Tracker({ range: data.range ?? null });
+    return;
+  }
+  if ('range' in data) {
+    tracker?.setRange(data.range);
     return;
   }
   const started = performance.now();

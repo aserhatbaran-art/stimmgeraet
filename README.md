@@ -11,7 +11,8 @@ Präzises Stimmgerät als installierbare Web-App (PWA) für Android. Kostenlos, 
 - Waagerechte Skala: Marker links = zu tief, rechts = zu hoch, grünes Feld in der Mitte = gestimmt
 - Leuchtender Pfeil und Klartext („Etwas höher stimmen“) zeigen die Drehrichtung
 - Erkennt auch leise gezupfte Nylonsaiten; meldet „kräftiger zupfen“, wenn der Ton zu leise ist
-- Reaktion rund 0,03 Sekunden nach dem Anschlag, ruhiger Marker ohne Zittern
+- Reagiert nicht auf Umgebungsgeräusche wie Sprechen, Klopfen, Pfeifen oder Klappern
+- Reaktion unter 0,1 Sekunden nach dem Anschlag, ruhiger Marker ohne Zittern
 - Kammerton A4 einstellbar (430–450 Hz), Referenzton je Saite
 - Deutsche (H) oder internationale (B) Notennamen
 - Funktioniert nach der Installation offline
@@ -26,7 +27,7 @@ Präzises Stimmgerät als installierbare Web-App (PWA) für Android. Kostenlos, 
 4. Optional eine Saite antippen, um sie fest zu wählen (hilfreich bei neuen, stark verstimmten Saiten).
 5. **Referenzton** einschalten und eine Saite antippen, um den Zielton zu hören.
 
-Tipp: Handy nah ans Schallloch legen, in ruhiger Umgebung stimmen, Saite einzeln und nicht zu hart anschlagen.
+Tipp: Handy nah ans Schallloch legen, Saite einzeln und nicht zu hart anschlagen. Gespräche in der Nähe blendet die App aus; sind sie aber fast so laut wie die Saite, kann der Marker kurz um einige Cent wandern – dann das Handy näher an die Saite halten.
 
 ## Veröffentlichen mit GitHub Pages (kostenlos)
 
@@ -74,7 +75,7 @@ Nach Änderungen an den Dateien die Versionsnummer `CACHE` in `sw.js` erhöhen, 
 | Datei | Inhalt |
 |---|---|
 | `js/pitch.js` | Tonhöhenerkennung (McLeod Pitch Method: Grobsuche bei 12 kHz, Feinsuche bei voller Abtastrate) |
-| `js/tracker.js` | entscheidet, was angezeigt wird: Rauschpegel-Schätzung, Start-/Halte-Hysterese, Oktavkorrektur, Kalman-Filter |
+| `js/tracker.js` | entscheidet, was angezeigt wird: Rauschpegel-Schätzung, Start-/Halte-Hysterese, Störgeräusch-Filter (Tonumfang, stabile Tonhöhe, längere Probezeit nach Störungen), Oktav- und Unterton-Korrektur, Vorrang der zuletzt angeschlagenen Saite, Kalman-Filter |
 | `js/pitch-worker.js` | führt Erkennung und Tracker im Hintergrund-Thread aus |
 | `js/audio.js` | Mikrofon, Analyse-Schleife (50 Messungen pro Sekunde, Fenster 170 ms) |
 | `js/tunings.js` | Stimmungen, Notennamen, Umrechnungen |
@@ -84,7 +85,9 @@ Nach Änderungen an den Dateien die Versionsnummer `CACHE` in `sw.js` erhöhen, 
 | `tools/make-icons.mjs` | erzeugt die Icons (`npm run icons`) |
 | `test/pitch.test.mjs` | Genauigkeitstests der Erkennung |
 | `test/tracker.test.mjs` | Praxistests: nachgebildete Saiten über ein Handy-Mikrofon, verarbeitet wie in der App |
-| `tools/simulate.mjs` | Prüfstand mit Messtabelle; mit Pfad zu einer alten `pitch.js` auch als Vorher-Nachher-Vergleich |
+| `test/interference.test.mjs` | Störgeräusche: Sprechen, Klopfen, Pfeifen, Klappern; Stimmen bei Gespräch im Hintergrund |
+| `tools/sim/noise.mjs` | Nachbildung der Störgeräusche |
+| `tools/simulate.mjs` | Prüfstand mit Messtabelle (Saiten und Störgeräusche); mit Pfad zu einer alten `pitch.js` auch als Vorher-Nachher-Vergleich |
 
 ### Genauigkeit und Zuverlässigkeit
 
@@ -99,5 +102,16 @@ Der Prüfstand (`node tools/simulate.mjs`) bildet gezupfte Nylonsaiten nach, wie
 | Reaktion bei normalem Anschlag | 50–70 ms | 10–30 ms |
 | Markerbewegung je Takt bei stehendem Ton | 0,43 Cent | 0,05 Cent |
 | Geistertöne in 2 Minuten Raumrauschen, auch mit Brummen | – | 0 |
+
+Version 1.3 macht die Anzeige unempfindlich gegen Umgebungsgeräusche. Anteil der Zeit, in der ohne gezupfte Saite trotzdem ein Ton angezeigt wird (Gitarre, Geräusch mit −55 bis −35 dBFS am Mikrofon):
+
+| Störgeräusch | Version 1.2 | Version 1.3 |
+|---|---|---|
+| Sprechen (Mann, Frau, Kind) | 51–73 % | 0–5 % |
+| Pfeifen, Piepen | 46–50 % | 0 % |
+| Klopfen | 21–38 % | 0 % |
+| Klappern | 14–42 % | 0 % |
+
+Dafür erscheint die Anzeige bei normalem Anschlag nach 70–90 ms statt 10–30 ms: Die App wartet auf vier übereinstimmende Messungen; läuft gerade ein Gespräch, auf zehn (bis 0,3 s). Alle 18 Saiten-Szenarien werden weiterhin erkannt, auch die sehr leisen. Wechselt man auf eine tiefere Saite, deren Oberton die noch klingende vorige Saite ist (z. B. E4 → A2), wird sie nach 0,1–0,3 s angezeigt, solange sie höchstens 10 dB leiser ist; sonst vorher die alte Saite abdämpfen.
 
 Die Mikrofon-Verzögerung des Handys kommt jeweils hinzu. In der Praxis begrenzen Mikrofon, Raumgeräusche und die Saite selbst die Genauigkeit auf etwa ± 1 Cent; bei Tönen, die kaum lauter als das Raumrauschen sind, auf etwa ± 5 Cent (die App bittet dann um kräftigeres Zupfen).

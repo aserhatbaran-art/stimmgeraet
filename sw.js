@@ -4,7 +4,7 @@
  * Eine neue Version wird beim nächsten Öffnen geladen; die App lädt sich dann einmal neu.
  * Bei Änderungen an der Dateiliste die Versionsnummer erhöhen.
  */
-const CACHE = 'stimmgeraet-v3';
+const CACHE = 'stimmgeraet-v4';
 const FILES = [
   './',
   'index.html',

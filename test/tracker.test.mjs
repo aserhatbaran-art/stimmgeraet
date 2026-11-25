@@ -28,7 +28,7 @@ function check(label, r, { latency, coverage, bias = 1.5, move = 0.5 }) {
 test('Konzertgitarre, normale Lautstärke: sofort, richtig, ruhig', () => {
   for (const freq of GUITAR) {
     const r = run(pipeline, { ...PHONE, freq, level: -45, string: 'nylon', sympathetic: others(GUITAR, freq), seed: 1 });
-    check(`${freq} Hz`, r, { latency: 80, coverage: 55 });
+    check(`${freq} Hz`, r, { latency: 120, coverage: 55 });
   }
 });
 
@@ -82,7 +82,7 @@ test('Ukulele (Nylon)', () => {
   for (const freq of UKULELE) {
     for (const level of [-48, -60]) {
       const r = run(pipeline, { ...PHONE, freq, level, string: 'nylon', sympathetic: others(UKULELE, freq), seed: 5 });
-      check(`${freq} Hz ${level} dB`, r, { latency: level > -50 ? 80 : 250 });
+      check(`${freq} Hz ${level} dB`, r, { latency: level > -50 ? 120 : 250 });
     }
   }
 });
@@ -91,7 +91,7 @@ test('Westerngitarre (Stahl) mit besserem Mikrofon', () => {
   for (const freq of GUITAR) {
     const r = run(pipeline, { ...GOOD_MIC, freq, level: -50, string: 'steel', sympathetic: others(GUITAR, freq), seed: 6 });
     // Stahlsaiten sind leicht inharmonisch (Obertöne etwas zu hoch) – Messung liegt dadurch bis ~2 Cent höher
-    check(`${freq} Hz`, r, { latency: 80, coverage: 65, bias: 2.5 });
+    check(`${freq} Hz`, r, { latency: 120, coverage: 65, bias: 2.5 });
   }
 });
 
@@ -144,7 +144,7 @@ test('Start mit leerem Puffer: kein Geisterton, danach wird ein Ton sofort erkan
     if (t >= 4.5 && shown !== null && first === null) first = t - 4.5;
   }
   assert.equal(ghosts, 0, `${ghosts} Geistertöne in der Einlernphase`);
-  assert.ok(first !== null && first <= 0.1, `Ton erst nach ${first} s erkannt`);
+  assert.ok(first !== null && first <= 0.15, `Ton erst nach ${first} s erkannt`);
 });
 
 test('Gleichbleibender Brummton wird nach einigen Sekunden ausgeblendet, eine Saite danach trotzdem erkannt', () => {
@@ -172,4 +172,33 @@ test('Gleichbleibender Brummton wird nach einigen Sekunden ausgeblendet, eine Sa
   }
   assert.equal(humShownLate, 0, `Brummen nach 9 s noch ${humShownLate} Takte angezeigt`);
   assert.ok(stringShown, 'Saite neben dem Brummen nicht erkannt');
+});
+
+test('Saitenwechsel auf eine tiefere Saite im Oktav- oder Duodezimabstand, während die höhere noch klingt', () => {
+  // E4 → A2 (Duodezime), E4 → E2 (zwei Oktaven), H3 → E2, D3 → D2 (Oktave, Drop D): kein Messfehler,
+  // sondern ein neuer Ton – auch wenn die neue Saite bis zu 10 dB leiser ist als die vorige.
+  // (Noch leiser überdeckt die nachklingende Saite sie in jeder Messung – physikalische Grenze.)
+  const cases = [
+    [329.63, 110, -45, -45],
+    [329.63, 82.41, -45, -45],
+    [146.83, 73.42, -45, -45],
+    [329.63, 110, -45, -52],
+    [329.63, 110, -42, -52],
+    [329.63, 82.41, -42, -52],
+    [246.94, 82.41, -42, -52],
+  ];
+  for (const [high, low, highLevel, lowLevel] of cases) {
+    const a = { ...PHONE, freq: high, level: highLevel, string: 'nylon', seed: 11 };
+    const b = { ...PHONE, freq: low, level: lowLevel, string: 'nylon', seed: 12, room: -120, noise: -120 };
+    const first = pluck({ ...a, sampleRate: SR, seconds: 4, pluckAt: 0.5 });
+    const second = pluck({ ...b, sampleRate: SR, seconds: 4, pluckAt: 1.5 });
+    const signal = first.map((v, i) => v + second[i]);
+    const truth = (_, t) => (t < 1 ? truePitch(a, t) : truePitch(b, t - 1));
+    const r = run(pipeline, { signal, truth });
+    const switched = r.rows.find((row) => row.t >= 1 && row.shown && Math.abs(1200 * Math.log2(row.shown / row.truth)) < 10);
+    assert.ok(switched && switched.t - 1 <= 0.4, `${high} → ${low} Hz (${lowLevel} dB): Wechsel ${switched ? Math.round((switched.t - 1) * 1000) + ' ms' : 'nicht erkannt'}`);
+    const late = r.rows.filter((row) => row.t >= 1.5 && row.t < 3 && row.shown);
+    const off = late.filter((row) => Math.abs(1200 * Math.log2(row.shown / row.truth)) > 50).length;
+    assert.equal(off, 0, `${high} → ${low} Hz (${lowLevel} dB): ${off} Takte auf der alten Saite`);
+  }
 });

@@ -20,6 +20,8 @@ export class Tuner {
     this.timer = null;
     this.worker = null;
     this.buffer = null;
+    this.local = null; // Erkennung im Hauptthread, falls kein Hintergrund-Thread verfügbar ist
+    this.range = null; // Tonumfang des Instruments in Hz, null = alle Töne
     /** Zeitpunkt auf der Audio-Uhr, zu dem der Testton einsetzt – nur im Testmodus. */
     this.testOnset = 0;
   }
@@ -36,6 +38,16 @@ export class Tuner {
   /** Testmodus: Millisekunden seit Einsetzen des Testtons, gemessen auf der Audio-Uhr. */
   testElapsedMs() {
     return this.ctx ? (this.ctx.currentTime - this.testOnset) * 1000 : 0;
+  }
+
+  /**
+   * Tonumfang des Instruments setzen: Töne außerhalb (z. B. Pfeifen, Piepen) werden nicht angezeigt.
+   * @param {[number, number]|null} range [tiefste, höchste] Frequenz in Hz; null = alle Töne
+   */
+  setRange(range) {
+    this.range = range;
+    this.worker?.postMessage({ range });
+    this.local?.tracker.setRange(range);
   }
 
   /**
@@ -80,11 +92,10 @@ export class Tuner {
       this.buffer = new Float32Array(size);
 
       // Ersatz, falls der Hintergrund-Thread nicht verfügbar ist: im Hauptthread rechnen
-      let local = null;
       const useLocal = () => {
         this.worker?.terminate();
         this.worker = null;
-        local = { detector: new PitchDetector(sampleRate), tracker: new Tracker() };
+        this.local = { detector: new PitchDetector(sampleRate), tracker: new Tracker({ range: this.range }) };
         this.buffer = new Float32Array(size);
       };
       try {
@@ -94,7 +105,7 @@ export class Tuner {
           this.buffer = new Float32Array(data.buffer); // Puffer zurückerhalten
           if (this.running) this.onResult(data.result);
         };
-        this.worker.postMessage({ sampleRate });
+        this.worker.postMessage({ sampleRate, range: this.range });
       } catch {
         useLocal();
       }
@@ -110,7 +121,7 @@ export class Tuner {
           this.worker.postMessage({ buffer, time }, [buffer]);
         } else {
           const started = performance.now();
-          const result = local.tracker.update(local.detector.detect(this.buffer), time);
+          const result = this.local.tracker.update(this.local.detector.detect(this.buffer), time);
           result.ms = performance.now() - started;
           this.onResult(result);
         }
@@ -137,6 +148,7 @@ export class Tuner {
   _release() {
     this.worker?.terminate();
     this.worker = null;
+    this.local = null;
     this.buffer = null;
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;

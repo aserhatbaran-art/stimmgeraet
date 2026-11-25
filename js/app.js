@@ -96,6 +96,16 @@ function currentTuning() {
   return list.find((t) => t.id === settings.tuning[settings.instrument]) ?? list[0];
 }
 
+/**
+ * Tonumfang für die Erkennung: tiefste Saite − 7 Halbtöne bis höchste Saite + 5 Halbtöne.
+ * Reicht für stark verstimmte Saiten; Pfeifen, Piepen usw. liegen darüber. Chromatisch: alle Töne.
+ */
+function instrumentRange() {
+  if (isChromatic()) return null;
+  const { strings } = currentTuning();
+  return [midiToFreq(Math.min(...strings) - 7, settings.a4), midiToFreq(Math.max(...strings) + 5, settings.a4)];
+}
+
 const nameOpts = () => ({ german: settings.german, flats: !isChromatic() && !!currentTuning().flats });
 const fullName = (midi) => `${noteName(midi, nameOpts())}${noteOctave(midi)}`;
 
@@ -483,6 +493,7 @@ function changeA4(delta) {
   settings.a4 = Math.min(A4_MAX, Math.max(A4_MIN, settings.a4 + delta));
   saveSettings();
   if (tone.playing) tone.stop();
+  tuner.setRange(instrumentRange());
   renderSettings();
   showIdle();
 }
@@ -508,6 +519,7 @@ function renderSettings() {
 }
 
 function renderAll() {
+  tuner.setRange(instrumentRange());
   renderTabs();
   renderTuningSelect();
   renderStrings();

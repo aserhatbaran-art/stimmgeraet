@@ -25,7 +25,7 @@ export function rng(seed) {
 }
 
 /** Butterworth-Hochpass 2. Ordnung (Biquad), auf das Signal angewendet. */
-function highpass(x, sampleRate, fc) {
+export function highpass(x, sampleRate, fc) {
   const w = (2 * Math.PI * fc) / sampleRate;
   const cos = Math.cos(w);
   const alpha = Math.sin(w) / Math.SQRT2;
